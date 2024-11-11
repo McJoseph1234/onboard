@@ -44,19 +44,9 @@ pipeline {
             steps {
                 container ('kubehelm') {
                     script {
-                        // Add Helm repos
-                        echo "==================== Adding Helm Repos ===================="
-                        sh "helm repo add grafana https://grafana.github.io/helm-charts"
-                        sh "helm repo add prometheus-community https://prometheus-community.github.io/helm-charts"
-                        sh "helm repo add perf-setup-helm https://emsijoseph.github.io/test1/perf-setup-helm"
-
                         // Update Helm repo
                         echo "==================== Updating Helm Repo ===================="
                         sh "helm repo update"
-
-                        // Install role binding
-                        echo "==================== Installing Role Binding ===================="
-                        sh "helm install role-binding perf-setup-helm/10.0-role-binding"
 
                         // Deploy JMeter master pod
                         echo "==================== Deploying JMeter [Master] Pod ===================="
