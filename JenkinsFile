@@ -54,6 +54,10 @@ pipeline {
                         echo "==================== Updating Helm Repo ===================="
                         sh "helm repo update"
 
+                        // Install role binding
+                        echo "==================== Installing Role Binding ===================="
+                        sh "helm install role-binding perf-setup-helm/10.0-role-binding"
+
                         // Deploy JMeter master pod
                         echo "==================== Deploying JMeter [Master] Pod ===================="
                         sh "helm install ${APP_JMETER_MASTER} perf-setup-helm/7.0-jmeter-master --values kube/jmeter-master.values --set appName=${APP_JMETER_MASTER} -n perf-platform"
