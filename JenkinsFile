@@ -62,7 +62,8 @@ pipeline {
 
                         // Wait for slave pods to be ready
                         echo "==================== Waiting for Slave Pods to be created, # of Slave Pods: ${params.slaveCount} ===================="
-                        sh "kubectl wait --for=condition=Ready pod -n perf-platform -l app=${APP_JMETER_SLAVE} --timeout=90s"
+                        // sh "kubectl wait --for=condition=Ready pod -n perf-platform -l app=${APP_JMETER_SLAVE} --timeout=90s"
+                        sh "kubectl wait --for=condition=Ready pod -n perf-platform -l app=${APP_JMETER_SLAVE}"
 
                         // Get IPs of slave pods
                         echo "==================== Getting IPs of the created PODS ===================="
