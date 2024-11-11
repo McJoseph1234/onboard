@@ -1,0 +1,153 @@
+pipeline {
+    agent {
+        kubernetes {
+            yamlFile './kube/kubehelm-pod.yaml'
+        }
+    }
+
+    parameters {
+        string(defaultValue: '1', description: 'JMeter Slave Count', name: 'slaveCount')
+        string(defaultValue: 'testDemoScript.jmx', description: 'JMeter Script Name (Default Directory is ./scripts)', name: 'scriptName')
+
+        string(defaultValue: 'https', description: 'Protocol', name: 'protocol')
+        string(defaultValue: 'catfact.ninja', description: 'Host', name: 'host')
+        string(defaultValue: '/breeds', description: 'Base Path', name: 'basePath')
+        string(defaultValue: 'testData.csv', description: 'Test Data File', name: 'testDataFile')
+        string(defaultValue: '10', description: 'Thread / User Count', name: 'threadCount')
+        string(defaultValue: '2', description: 'Startup Time', name: 'startupTime')
+        string(defaultValue: '116', description: 'Hold Load Time', name: 'holdLoadTime')
+        string(defaultValue: '2', description: 'Shutdown Time', name: 'shutdownTime')
+        string(defaultValue: '20', description: 'Target Throughput Per Min', name: 'targetThroughputPerMin')
+    }
+
+    environment {
+        DEPLOYMENT_NAME = "${JOB_NAME}-${BUILD_NUMBER}"
+        APP_JMETER_MASTER = "jmeter-master-${DEPLOYMENT_NAME}"
+        APP_JMETER_SLAVE = "jmeter-slave-${DEPLOYMENT_NAME}"
+        APP_TEST_RESULTS_DIRECTORY = "jmeter-results"
+
+        /* JMeter User Defined Variables, Keep the Body as EMPTY if no variables */
+        JMETER_USER_DEFINED_VARIABLES =
+        "-Jprotocol=${params.protocol} " +
+        "-Jhost=${params.host} " +
+        "-JbasePath=${params.basePath} " +
+        "-JtestDataFile=${params.testDataFile} " +
+        "-JthreadCount=${params.threadCount} " +
+        "-JstartupTime=${params.startupTime} " +
+        "-JholdLoadTime=${params.holdLoadTime} " +
+        "-JshutdownTime=${params.shutdownTime} " +
+        "-JtargetThroughputPerMin=${params.targetThroughputPerMin}"
+    }
+
+    stages {
+        stage ('Create JMeter Pods') {
+            steps {
+                container ('kubehelm') {
+                    script {
+                        echo "==================== Updating Helm Repo ===================="
+                        sh "helm repo update"
+
+                        echo "==================== Deploying JMeter [Master] Pod ===================="
+                        sh "helm install ${APP_JMETER_MASTER} perf-setup-helm/7.0-jmeter-master --values kube/jmeter-master.values --set appName=${APP_JMETER_MASTER} -n perf-platform"
+
+                        echo "==================== Waiting for JMeter Master Pod to be RUNNING ===================="
+                        sh "kubectl wait --for=condition=Ready pod -n perf-platform -l app=${APP_JMETER_MASTER} --timeout=90s"
+
+                        echo "==================== Creating JMeter [Slave] Pod(s) ===================="
+                        sh "helm install ${APP_JMETER_SLAVE} perf-setup-helm/8.0-jmeter-slave --values kube/jmeter-slave.values --set appName=${APP_JMETER_SLAVE} --set replicas=${params.slaveCount} -n perf-platform"
+
+                        echo "==================== Waiting for Slave Pods to be created, # of Slave Pods: ${params.slaveCount} ===================="
+                        sh "kubectl wait --for=condition=Ready pod -n perf-platform -l app=${APP_JMETER_SLAVE} --timeout=90s"
+
+                        echo "==================== Getting IPs of the created PODS ===================="
+                        env.POD_IPS = sh(script: "kubectl get pods -n perf-platform -l app=${APP_JMETER_SLAVE} -o jsonpath='{.items[*].status.podIP}' | tr ' ' ','", returnStdout: true).trim()
+
+                        echo "==================== JMeter Slave Pod IPs: ${env.POD_IPS} ===================="
+                    }
+                }
+            }
+        }
+
+        stage ('Copying Data Files into JMeter Pods') {
+            steps {
+                container ('kubehelm') {
+                    script {
+                        echo "==================== Copying JMeter Script and Data Files into Pods ===================="
+
+                        env.MASTER_POD_NAME = sh(script: "kubectl get pods -n perf-platform -l app=${APP_JMETER_MASTER} -o jsonpath='{.items[*].metadata.name}'", returnStdout: true).trim()
+                        echo "JMeter Master POD Names : ${env.MASTER_POD_NAME}"
+
+                        for (pod in env.MASTER_POD_NAME.split()) {
+                            echo "Copying JMeter Script Files to Master Pod: ${pod}"
+                            sh "kubectl cp ./scripts/ ${pod}:./"
+                            echo "Copying JMeter Data Files to Master Pod: ${pod}"
+                            sh "kubectl cp ./data/ ${pod}:./"
+                        }
+
+                        env.SLAVE_POD_NAMES = sh(script: "kubectl get pods -n perf-platform -l app=${APP_JMETER_SLAVE} -o jsonpath='{.items[*].metadata.name}'", returnStdout: true).trim()
+                        echo "JMeter Slave POD Names : ${env.SLAVE_POD_NAMES}"
+
+                        for (pod in env.SLAVE_POD_NAMES.split()) {
+                            echo "Copying JMeter Script Files to Slave Pod: ${pod}"
+                            sh "kubectl cp ./scripts/ ${pod}:./"
+                            echo "Copying JMeter Data Files to Slave Pod: ${pod}"
+                            sh "kubectl cp ./data/ ${pod}:./"
+                        }
+                    }
+                    echo "==================== Finished copying JMeter Script and Data Files into Pods ===================="
+                }
+            }
+        }
+
+        stage ('Execute JMeter Distributed Test') {
+            steps {
+                container ('kubehelm') {
+                    script {
+                        echo "==================== Starting JMeter Distributed Testing ===================="
+                        sh "kubectl exec ${env.MASTER_POD_NAME} -- /bin/bash -c 'jmeter --version'"
+                        sh "kubectl exec ${env.MASTER_POD_NAME} -- /bin/bash -c 'mkdir ${APP_TEST_RESULTS_DIRECTORY}'"
+
+                        def JMETER_COMMAND = "jmeter -n -t ./scripts/${params.scriptName} -Dserver.rmi.localport=1099 -Dserver_port=1099 -Jserver.rmi.ssl.disable=true -l ./${APP_TEST_RESULTS_DIRECTORY}/jmeter-results.csv -e -o ./${APP_TEST_RESULTS_DIRECTORY} -R ${env.POD_IPS} ${JMETER_USER_DEFINED_VARIABLES}"
+                        sh "kubectl exec ${env.MASTER_POD_NAME} -- /bin/bash -c '${JMETER_COMMAND}'"
+
+                        echo "==================== JMeter Distribution Test Execution is COMPLETED ===================="
+                    }
+                }
+            }
+        }
+
+        stage ('Copy JMeter Test Execution Results') {
+            steps {
+                container ('kubehelm') {
+                    script {
+                        echo "==================== Copying JMeter Results File from Directory: ${APP_TEST_RESULTS_DIRECTORY} ===================="
+                        sh "kubectl cp ${env.MASTER_POD_NAME}:${APP_TEST_RESULTS_DIRECTORY} ./${APP_TEST_RESULTS_DIRECTORY} -n perf-platform"
+                        echo "==================== Copying JMeter Results File from Directory: ${APP_TEST_RESULTS_DIRECTORY} is COMPLETED ===================="
+
+                        echo "==================== Setting up JMeter JTL Results Report ===================="
+                        perfReport "${APP_TEST_RESULTS_DIRECTORY}/jmeter-results.csv"
+                        echo "==================== Setting up JMeter JTL Results Report is COMPLETED ===================="
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            container('kubehelm') {
+                script {
+                    echo "==================== Archiving all the resources ===================="
+                    sh "pwd"
+                    archiveArtifacts artifacts: '**/*', excludes: ''
+
+                    echo "==================== Deleting JMeter Master Pod ===================="
+                    sh "helm uninstall ${APP_JMETER_MASTER} -n perf-platform"
+
+                    echo "==================== Deleting JMeter Slave Pods ===================="
+                    sh "helm uninstall ${APP_JMETER_SLAVE} -n perf-platform"
+                }
+            }
+        }
+    }
+}

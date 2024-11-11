@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kubehelm
+  namespace: perf-platform
+spec:
+  containers:
+    - name: kubehelm
+      image: centosadmin/kubernetes-helm:v3.12.3
+      resources:
+        requests:
+          cpu: 200m
+          memory: 1024Mi
+        limits:
+          cpu: 512m
+          memory: 1248Mi
+      command:
+      - cat
+      tty: true
+      volumeMounts:
+        - name: helm-volume
+          mountPath: "/root/.config"
+  volumes:
+    - name: helm-volume
+      persistentVolumeClaim:
+        claimName: helm-pvc
