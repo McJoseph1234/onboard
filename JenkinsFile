@@ -44,21 +44,33 @@ pipeline {
             steps {
                 container ('kubehelm') {
                     script {
+                        // Add Helm repos
+                        echo "==================== Adding Helm Repos ===================="
+                        sh "helm repo add grafana https://grafana.github.io/helm-charts"
+                        sh "helm repo add prometheus-community https://prometheus-community.github.io/helm-charts"
+                        sh "helm repo add perf-setup-helm https://emsijoseph.github.io/test1/perf-setup-helm"
+
+                        // Update Helm repo
                         echo "==================== Updating Helm Repo ===================="
                         sh "helm repo update"
 
+                        // Deploy JMeter master pod
                         echo "==================== Deploying JMeter [Master] Pod ===================="
                         sh "helm install ${APP_JMETER_MASTER} perf-setup-helm/7.0-jmeter-master --values kube/jmeter-master.values --set appName=${APP_JMETER_MASTER} -n perf-platform"
 
+                        // Wait for master pod to be ready
                         echo "==================== Waiting for JMeter Master Pod to be RUNNING ===================="
                         sh "kubectl wait --for=condition=Ready pod -n perf-platform -l app=${APP_JMETER_MASTER} --timeout=90s"
 
+                        // Deploy JMeter slave pods
                         echo "==================== Creating JMeter [Slave] Pod(s) ===================="
                         sh "helm install ${APP_JMETER_SLAVE} perf-setup-helm/8.0-jmeter-slave --values kube/jmeter-slave.values --set appName=${APP_JMETER_SLAVE} --set replicas=${params.slaveCount} -n perf-platform"
 
+                        // Wait for slave pods to be ready
                         echo "==================== Waiting for Slave Pods to be created, # of Slave Pods: ${params.slaveCount} ===================="
                         sh "kubectl wait --for=condition=Ready pod -n perf-platform -l app=${APP_JMETER_SLAVE} --timeout=90s"
 
+                        // Get IPs of slave pods
                         echo "==================== Getting IPs of the created PODS ===================="
                         env.POD_IPS = sh(script: "kubectl get pods -n perf-platform -l app=${APP_JMETER_SLAVE} -o jsonpath='{.items[*].status.podIP}' | tr ' ' ','", returnStdout: true).trim()
 
@@ -72,6 +84,7 @@ pipeline {
             steps {
                 container ('kubehelm') {
                     script {
+                        // Copy JMeter script and data files to master and slave pods
                         echo "==================== Copying JMeter Script and Data Files into Pods ===================="
 
                         env.MASTER_POD_NAME = sh(script: "kubectl get pods -n perf-platform -l app=${APP_JMETER_MASTER} -o jsonpath='{.items[*].metadata.name}'", returnStdout: true).trim()
@@ -103,6 +116,7 @@ pipeline {
             steps {
                 container ('kubehelm') {
                     script {
+                        // Execute JMeter test on master pod
                         echo "==================== Starting JMeter Distributed Testing ===================="
                         sh "kubectl exec ${env.MASTER_POD_NAME} -- /bin/bash -c 'jmeter --version'"
                         sh "kubectl exec ${env.MASTER_POD_NAME} -- /bin/bash -c 'mkdir ${APP_TEST_RESULTS_DIRECTORY}'"
@@ -120,10 +134,12 @@ pipeline {
             steps {
                 container ('kubehelm') {
                     script {
+                        // Copy test results from master pod to local machine
                         echo "==================== Copying JMeter Results File from Directory: ${APP_TEST_RESULTS_DIRECTORY} ===================="
                         sh "kubectl cp ${env.MASTER_POD_NAME}:${APP_TEST_RESULTS_DIRECTORY} ./${APP_TEST_RESULTS_DIRECTORY} -n perf-platform"
                         echo "==================== Copying JMeter Results File from Directory: ${APP_TEST_RESULTS_DIRECTORY} is COMPLETED ===================="
 
+                        // Generate performance report
                         echo "==================== Setting up JMeter JTL Results Report ===================="
                         perfReport "${APP_TEST_RESULTS_DIRECTORY}/jmeter-results.csv"
                         echo "==================== Setting up JMeter JTL Results Report is COMPLETED ===================="
@@ -137,10 +153,12 @@ pipeline {
         always {
             container('kubehelm') {
                 script {
+                    // Archive all resources
                     echo "==================== Archiving all the resources ===================="
                     sh "pwd"
                     archiveArtifacts artifacts: '**/*', excludes: ''
 
+                    // Uninstall JMeter master and slave pods
                     echo "==================== Deleting JMeter Master Pod ===================="
                     sh "helm uninstall ${APP_JMETER_MASTER} -n perf-platform"
 
